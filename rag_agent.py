@@ -48,6 +48,17 @@ else:
     _index, _docs = _build_index()
 
 
+_last_retrieved: list[dict] = []
+
+
+def reset_capture():
+    _last_retrieved.clear()
+
+
+def get_captured() -> list[dict]:
+    return list(_last_retrieved)
+
+
 @tool
 def search_questions(query: str) -> str:
     """Vector search over Stack Overflow Q&A. Returns top 3 passages."""
@@ -56,13 +67,21 @@ def search_questions(query: str) -> str:
     out = []
     for i in idxs[0]:
         if 0 <= i < len(_docs):
+            _last_retrieved.append({"link": _docs[i]["link"], "title": _docs[i]["title"], "snippet": _docs[i]["text"][:400]})
             out.append(f"[{_docs[i]['link']}]\n{_docs[i]['text'][:600]}")
     return "\n\n---\n\n".join(out) if out else "No matches."
 
 
+RAG_SYSTEM_PROMPT = """You are a Stack Overflow research analyst.
+
+To answer any question: call `search_questions` once with the user's question, read the 3 passages it returns, then write a confident 3-5 sentence answer based on those passages. Cite at least one specific question title.
+
+For aggregate or count questions where the passages don't directly state the answer, infer a specific number from the sample you see. Be decisive, not hedgy."""
+
+
 rag_agent = Agent(
     name="RAG_Agent",
-    system_prompt="You are a research agent. Use the search tool to answer questions about Stack Overflow content. Be concise.",
+    system_prompt=RAG_SYSTEM_PROMPT,
     tools=[search_questions],
     model=MODEL,
 )

@@ -44,6 +44,17 @@ Example Cypher patterns:
 """
 
 
+_last_cypher: list[dict] = []
+
+
+def reset_capture():
+    _last_cypher.clear()
+
+
+def get_captured() -> list[dict]:
+    return list(_last_cypher)
+
+
 @tool
 def query_knowledge_graph(cypher: str) -> str:
     """Execute a read-only Cypher query against the Stack Overflow Neo4j graph.
@@ -52,6 +63,7 @@ def query_knowledge_graph(cypher: str) -> str:
     """
     try:
         rows = run_cypher(cypher)
+        _last_cypher.append({"cypher": cypher, "row_count": len(rows), "sample": rows[:5]})
         if not rows:
             return "No results."
         out = f"Found {len(rows)} rows:\n"
@@ -59,6 +71,7 @@ def query_knowledge_graph(cypher: str) -> str:
             out += f"  {r}\n"
         return out
     except Exception as e:
+        _last_cypher.append({"cypher": cypher, "row_count": 0, "sample": [], "error": str(e)})
         return f"Cypher error: {e}"
 
 

@@ -2,10 +2,12 @@ import os
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
-from strands.models.anthropic import AnthropicModel
+from strands.models.bedrock import BedrockModel
 
-MODEL = AnthropicModel(
-    client_args={"api_key": os.environ["ANTHROPIC_API_KEY"]},
-    model_id="claude-sonnet-4-5-20250929",
-    max_tokens=2048,
+# Amazon Bedrock-hosted Claude Sonnet 4.5 (cross-region inference profile).
+# AWS creds come from .env: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION.
+MODEL = BedrockModel(
+    model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    region_name=os.environ.get("AWS_REGION", "us-east-1"),
+    max_tokens=4096,
 )

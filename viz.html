@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Graph-RAG · Cypher Traversal Visualizer</title>
+<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #11151c;
+    --panel-2: #1a1f2a;
+    --line: #232a38;
+    --text: #e6e8ee;
+    --muted: #8892a6;
+    --accent: #6ee7ff;
+    --accent-2: #ffb86b;
+    --good: #7be495;
+    --bad: #ff7a7a;
+    --user: #6ea8ff;
+    --question: #ffb86b;
+    --answer: #7be495;
+    --tag: #c792ea;
+    --highlight: #ffe66b;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    font-size: 14px;
+  }
+  .app {
+    display: grid;
+    grid-template-rows: auto 1fr;
+    height: 100vh;
+  }
+  header {
+    padding: 14px 22px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: linear-gradient(180deg, #11151c 0%, #0b0e14 100%);
+  }
+  header h1 {
+    font-size: 15px;
+    margin: 0;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+  }
+  header .sub {
+    color: var(--muted);
+    font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  main {
+    display: grid;
+    grid-template-columns: 1fr 460px;
+    overflow: hidden;
+  }
+  #graph {
+    background:
+      radial-gradient(circle at 30% 20%, rgba(110,168,255,0.06), transparent 50%),
+      radial-gradient(circle at 80% 80%, rgba(199,146,234,0.05), transparent 50%),
+      var(--bg);
+    border-right: 1px solid var(--line);
+    position: relative;
+  }
+  #legend {
+    position: absolute;
+    bottom: 16px;
+    left: 16px;
+    background: rgba(17,21,28,0.85);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 12px;
+    display: flex;
+    gap: 14px;
+    align-items: center;
+  }
+  #legend .item { display: flex; gap: 6px; align-items: center; }
+  #legend .dot { width: 10px; height: 10px; border-radius: 50%; }
+  #status {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    background: rgba(17,21,28,0.85);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    min-height: 32px;
+    max-width: 500px;
+  }
+  #status .step { color: var(--accent); }
+  aside {
+    background: var(--panel);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+  .section {
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--line);
+  }
+  .section h2 {
+    margin: 0 0 10px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+  }
+  .queries { display: flex; flex-direction: column; gap: 6px; }
+  .q-btn {
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    color: var(--text);
+    text-align: left;
+    padding: 10px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: all 0.15s ease;
+    line-height: 1.4;
+  }
+  .q-btn:hover {
+    border-color: var(--accent);
+    background: #1c2230;
+  }
+  .q-btn.active {
+    border-color: var(--accent);
+    background: #15202c;
+    box-shadow: 0 0 0 1px rgba(110,231,255,0.3);
+  }
+  .q-btn .num {
+    color: var(--accent);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    margin-right: 8px;
+    font-weight: 600;
+  }
+  .q-btn .ice { color: var(--accent-2); margin-right: 4px; }
+  pre.cypher {
+    background: #0a0d13;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px;
+    margin: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    overflow-x: auto;
+    color: #d4d8e0;
+  }
+  .cypher .kw { color: #ff79c6; font-weight: 600; }
+  .cypher .label { color: var(--tag); }
+  .cypher .str { color: var(--good); }
+  .cypher .fn { color: var(--accent); }
+  .cypher .comment { color: var(--muted); font-style: italic; }
+  .results {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--text);
+    min-height: 60px;
+  }
+  .results .answer-num {
+    font-size: 28px;
+    color: var(--good);
+    font-weight: 700;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .results ul {
+    margin: 6px 0;
+    padding-left: 18px;
+    color: var(--text);
+  }
+  .results li { margin: 2px 0; }
+  .results .label { color: var(--muted); }
+  .verdict {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: rgba(123,228,149,0.12);
+    color: var(--good);
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    margin-bottom: 10px;
+  }
+  .verdict.bad {
+    background: rgba(255,122,122,0.12);
+    color: var(--bad);
+  }
+  .controls {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .btn {
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    color: var(--text);
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-family: inherit;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary {
+    background: var(--accent);
+    color: #07111a;
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+  .btn.primary:hover { background: #99efff; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div>
+      <h1>Graph-RAG · Cypher Traversal Visualizer</h1>
+      <div class="sub">Stack Overflow knowledge graph · 1,589 questions · 1,367 answers · 1,365 users · 476 tags</div>
+    </div>
+    <div class="sub">Neo4j · Cypher · Claude Sonnet 4.5</div>
+  </header>
+  <main>
+    <section id="graph">
+      <div id="status">Pick a query →</div>
+      <div id="legend">
+        <div class="item"><div class="dot" style="background:var(--user)"></div>User</div>
+        <div class="item"><div class="dot" style="background:var(--question)"></div>Question</div>
+        <div class="item"><div class="dot" style="background:var(--answer)"></div>Answer</div>
+        <div class="item"><div class="dot" style="background:var(--tag)"></div>Tag</div>
+        <div class="item"><div class="dot" style="background:var(--highlight)"></div>Match</div>
+      </div>
+    </section>
+    <aside>
+      <div class="section">
+        <h2>Hero queries</h2>
+        <div class="queries" id="queries"></div>
+      </div>
+      <div class="section">
+        <h2>Generated Cypher</h2>
+        <pre class="cypher" id="cypher">// Click a query to see the Cypher and the traversal.</pre>
+      </div>
+      <div class="section">
+        <h2>Result</h2>
+        <div class="results" id="results">—</div>
+        <div class="controls">
+          <button class="btn primary" id="run-btn" disabled>▶ Replay traversal</button>
+          <button class="btn" id="reset-btn">Reset</button>
+        </div>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<script>
+// -----------------------------------------------------------------------------
+// Mock graph data — mirrors the real Stack Overflow schema in playground/.
+// Small enough to be readable, structured to make the 4 hero queries visual.
+// -----------------------------------------------------------------------------
+
+const TAGS = [
+  { id: "t:cypher",    label: "cypher",    type: "Tag" },
+  { id: "t:java",      label: "java",      type: "Tag" },
+  { id: "t:neo4j",     label: "neo4j",     type: "Tag" },
+  { id: "t:python",    label: "python",    type: "Tag" },
+  { id: "t:apoc",      label: "neo4j-apoc",type: "Tag" },
+  { id: "t:graphdb",   label: "graph-databases", type: "Tag" },
+  { id: "t:gds",       label: "graph-data-science", type: "Tag" },
+  { id: "t:csv",       label: "csv",       type: "Tag" },
+];
+
+const USERS = [
+  { id: "u:alice",   label: "alice",    type: "User" },
+  { id: "u:bob",     label: "bob",      type: "User" },
+  { id: "u:carol",   label: "carol",    type: "User" },
+  { id: "u:dave",    label: "dave",     type: "User" },
+  { id: "u:erin",    label: "erin",     type: "User" },
+  { id: "u:frank",   label: "frank",    type: "User" },
+  { id: "u:gina",    label: "gina",     type: "User" },
+  { id: "u:henry",   label: "henry",    type: "User" },
+];
+
+// Questions tagged with various combinations, designed so query 2 has a clean answer.
+const QUESTIONS = [
+  { id: "q1", label: "Q: How to filter Cypher by date?",         tags: ["t:cypher", "t:neo4j"],   views: 1851, accepted: true },
+  { id: "q2", label: "Q: APOC procedure for batch import",       tags: ["t:apoc", "t:neo4j", "t:csv"], views: 920, accepted: true },
+  { id: "q3", label: "Q: Java driver retry transaction",         tags: ["t:java", "t:neo4j"],     views: 540, accepted: true },
+  { id: "q4", label: "Q: Python neo4j async session",            tags: ["t:python", "t:neo4j"],   views: 1120, accepted: false },
+  { id: "q5", label: "Q: Cypher OPTIONAL MATCH semantics",       tags: ["t:cypher"],              views: 770, accepted: true },
+  { id: "q6", label: "Q: APOC vs GDS for centrality",            tags: ["t:apoc", "t:gds", "t:graphdb"], views: 380, accepted: false },
+  { id: "q7", label: "Q: Java memory tuning JVM heap",           tags: ["t:java"],                views: 1500, accepted: true },
+  { id: "q8", label: "Q: Cypher MERGE deadlock at scale",        tags: ["t:cypher", "t:neo4j"],   views: 1240, accepted: true },
+  { id: "q9", label: "Q: Python pandas join performance",        tags: ["t:python"],              views: 1700, accepted: false },
+];
+
+// Answers — (answerId, who provided it, which question it answers, accepted?)
+const ANSWERS = [
+  { id: "a1",  by: "u:alice", to: "q1", accepted: true  },
+  { id: "a2",  by: "u:bob",   to: "q1", accepted: false },
+  { id: "a3",  by: "u:carol", to: "q2", accepted: true  },
+  { id: "a4",  by: "u:alice", to: "q3", accepted: true  },
+  { id: "a5",  by: "u:dave",  to: "q4", accepted: false },
+  { id: "a6",  by: "u:erin",  to: "q5", accepted: true  },
+  { id: "a7",  by: "u:bob",   to: "q5", accepted: false },
+  { id: "a8",  by: "u:frank", to: "q6", accepted: false },
+  { id: "a9",  by: "u:gina",  to: "q7", accepted: true  },
+  { id: "a10", by: "u:alice", to: "q8", accepted: true  },
+  { id: "a11", by: "u:henry", to: "q8", accepted: false },
+  { id: "a12", by: "u:dave",  to: "q9", accepted: false },
+];
+
+// User-ASKED-Question
+const ASKED = [
+  { user: "u:alice", q: "q3" },   // alice asked a java question — she'll match query 2
+  { user: "u:bob",   q: "q7" },   // bob asked a java question — he'll match query 2 too
+  { user: "u:carol", q: "q1" },
+  { user: "u:dave",  q: "q4" },
+  { user: "u:erin",  q: "q2" },
+  { user: "u:frank", q: "q9" },
+  { user: "u:gina",  q: "q5" },
+  { user: "u:henry", q: "q6" },
+];
+
+// Build vis-network datasets.
+const NODE_COLOR = {
+  User:     { background: "#6ea8ff", border: "#3d75c4" },
+  Question: { background: "#ffb86b", border: "#c8854a" },
+  Answer:   { background: "#7be495", border: "#4ea867" },
+  Tag:      { background: "#c792ea", border: "#8e62ad" },
+};
+
+function buildNodes() {
+  const nodes = [];
+  for (const t of TAGS) nodes.push({ id: t.id, label: "#" + t.label, group: "Tag", _orig: NODE_COLOR.Tag });
+  for (const u of USERS) nodes.push({ id: u.id, label: u.label, group: "User", _orig: NODE_COLOR.User });
+  for (const q of QUESTIONS) nodes.push({ id: q.id, label: q.label, group: "Question", _orig: NODE_COLOR.Question, title: `views: ${q.views}` });
+  for (const a of ANSWERS) nodes.push({ id: a.id, label: (a.accepted ? "✓ " : "") + a.id, group: "Answer", _orig: NODE_COLOR.Answer });
+  return nodes.map(n => ({
+    ...n,
+    color: { background: n._orig.background, border: n._orig.border },
+    font: { color: "#0b0e14", face: "ui-monospace, SFMono-Regular, Menlo, monospace", size: 11 },
+    shape: n.group === "Tag" ? "box" : "dot",
+    size: n.group === "Tag" ? 14 : 16,
+    borderWidth: 2,
+  }));
+}
+
+function buildEdges() {
+  const edges = [];
+  let eid = 0;
+  for (const q of QUESTIONS) {
+    for (const t of q.tags) edges.push({ id: "e" + eid++, from: q.id, to: t, label: "TAGGED", _kind: "TAGGED" });
+  }
+  for (const a of ANSWERS) {
+    edges.push({ id: "e" + eid++, from: a.by, to: a.id, label: "PROVIDED", _kind: "PROVIDED" });
+    edges.push({ id: "e" + eid++, from: a.id, to: a.to, label: "ANSWERED", _kind: "ANSWERED" });
+  }
+  for (const r of ASKED) {
+    edges.push({ id: "e" + eid++, from: r.user, to: r.q, label: "ASKED", _kind: "ASKED" });
+  }
+  return edges.map(e => ({
+    ...e,
+    arrows: "to",
+    color: { color: "#3a4258", highlight: "#ffe66b" },
+    font: { color: "#5b6478", size: 9, face: "ui-monospace, SFMono-Regular, Menlo, monospace", strokeWidth: 0, align: "middle" },
+    smooth: { type: "dynamic" },
+    width: 1,
+  }));
+}
+
+const allNodes = new vis.DataSet(buildNodes());
+const allEdges = new vis.DataSet(buildEdges());
+
+const container = document.getElementById("graph");
+const network = new vis.Network(container, { nodes: allNodes, edges: allEdges }, {
+  physics: {
+    barnesHut: { gravitationalConstant: -8000, springLength: 110, springConstant: 0.03, damping: 0.4 },
+    stabilization: { iterations: 200 },
+  },
+  interaction: { hover: true, tooltipDelay: 150 },
+  nodes: { shadow: { enabled: true, color: "rgba(0,0,0,0.4)", size: 6 } },
+});
+
+// -----------------------------------------------------------------------------
+// Highlight helpers
+// -----------------------------------------------------------------------------
+function resetHighlights() {
+  allNodes.forEach(n => {
+    allNodes.update({
+      id: n.id,
+      color: { background: n._orig.background, border: n._orig.border },
+      borderWidth: 2,
+      size: n.group === "Tag" ? 14 : 16,
+      opacity: 1.0,
+    });
+  });
+  allEdges.forEach(e => {
+    allEdges.update({
+      id: e.id,
+      color: { color: "#3a4258" },
+      width: 1,
+      opacity: 1.0,
+    });
+  });
+}
+
+function dimAll() {
+  allNodes.forEach(n => allNodes.update({ id: n.id, opacity: 0.18 }));
+  allEdges.forEach(e => allEdges.update({ id: e.id, opacity: 0.1, color: { color: "#262c3a" } }));
+}
+
+function highlightNodes(ids, color = "#ffe66b", border = "#c8a500", size = 22) {
+  for (const id of ids) {
+    allNodes.update({
+      id,
+      color: { background: color, border },
+      borderWidth: 3,
+      size,
+      opacity: 1.0,
+    });
+  }
+}
+
+function highlightEdges(filter, color = "#ffe66b", width = 3) {
+  allEdges.forEach(e => {
+    if (filter(e)) {
+      allEdges.update({ id: e.id, color: { color }, width, opacity: 1.0 });
+    }
+  });
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const setStatus = (html) => { document.getElementById("status").innerHTML = html; };
+
+// -----------------------------------------------------------------------------
+// Cypher syntax highlighting (minimal)
+// -----------------------------------------------------------------------------
+function hl(cy) {
+  return cy
+    .replace(/\/\/[^\n]*/g, m => `<span class="comment">${m}</span>`)
+    .replace(/\b(MATCH|WHERE|RETURN|WITH|OPTIONAL|AS|AND|OR|NOT|ORDER BY|LIMIT|DESC|ASC|DISTINCT|IN|COUNT|MAX)\b/g,
+      '<span class="kw">$1</span>')
+    .replace(/:(User|Question|Answer|Tag)\b/g, ':<span class="label">$1</span>')
+    .replace(/'([^']+)'/g, `'<span class="str">$1</span>'`);
+}
+
+// -----------------------------------------------------------------------------
+// Query definitions — each has Cypher, a traversal animation, and a result.
+// -----------------------------------------------------------------------------
+const QUERIES = [
+  {
+    n: 1,
+    label: "Count of cypher questions with accepted answers",
+    cypher: `// Count questions tagged 'cypher' that have an accepted answer
+MATCH (q:Question)-[:TAGGED]->(:Tag {name:'cypher'})
+MATCH (a:Answer {is_accepted: true})-[:ANSWERED]->(q)
+RETURN count(DISTINCT q) AS n;`,
+    answer: { type: "number", value: 467, label: "questions" },
+    verdict: { good: true, text: "EXACT — Graph-RAG returns a number, vanilla RAG punts." },
+    run: async () => {
+      dimAll();
+      setStatus(`<span class="step">Step 1.</span> Find :Tag {name:'cypher'}`);
+      const cypher = ["t:cypher"];
+      highlightNodes(cypher, "#c792ea", "#8e62ad", 26);
+      await sleep(900);
+
+      setStatus(`<span class="step">Step 2.</span> MATCH (q:Question)-[:TAGGED]->(:Tag {name:'cypher'})`);
+      const cypherQs = QUESTIONS.filter(q => q.tags.includes("t:cypher")).map(q => q.id);
+      highlightNodes(cypherQs, "#ffb86b", "#c8854a", 22);
+      highlightEdges(e => e._kind === "TAGGED" && e.to === "t:cypher" && cypherQs.includes(e.from));
+      await sleep(1100);
+
+      setStatus(`<span class="step">Step 3.</span> MATCH (a:Answer {is_accepted: true})-[:ANSWERED]->(q)`);
+      const acceptedAns = ANSWERS.filter(a => a.accepted && cypherQs.includes(a.to)).map(a => a.id);
+      highlightNodes(acceptedAns, "#7be495", "#4ea867", 22);
+      highlightEdges(e => e._kind === "ANSWERED" && acceptedAns.includes(e.from));
+      await sleep(1100);
+
+      setStatus(`<span class="step">Step 4.</span> RETURN count(DISTINCT q) — highlighted questions = answer`);
+      highlightNodes(cypherQs, "#ffe66b", "#c8a500", 26);
+      await sleep(600);
+    },
+  },
+  {
+    n: 2,
+    label: "Users who answered 'cypher' AND asked 'java'",
+    cypher: `// Multi-hop: users who answered cypher AND asked java
+MATCH (u:User)-[:PROVIDED]->(:Answer)-[:ANSWERED]->(:Question)-[:TAGGED]->(:Tag {name:'cypher'})
+MATCH (u)-[:ASKED]->(:Question)-[:TAGGED]->(:Tag {name:'java'})
+RETURN DISTINCT u.display_name;`,
+    answer: { type: "list", items: ["alice", "bob"] },
+    verdict: { good: true, text: "Multi-hop path traversal — impossible for vector RAG." },
+    run: async () => {
+      dimAll();
+      setStatus(`<span class="step">Step 1.</span> Anchor on :Tag {name:'cypher'}`);
+      highlightNodes(["t:cypher"], "#c792ea", "#8e62ad", 26);
+      await sleep(800);
+
+      setStatus(`<span class="step">Step 2.</span> Walk backward through TAGGED → Question → ANSWERED → Answer → PROVIDED → User`);
+      const cypherQs = QUESTIONS.filter(q => q.tags.includes("t:cypher")).map(q => q.id);
+      highlightNodes(cypherQs, "#ffb86b", "#c8854a", 20);
+      highlightEdges(e => e._kind === "TAGGED" && e.to === "t:cypher");
+      await sleep(700);
+
+      const ansToCypher = ANSWERS.filter(a => cypherQs.includes(a.to));
+      highlightNodes(ansToCypher.map(a => a.id), "#7be495", "#4ea867", 18);
+      highlightEdges(e => e._kind === "ANSWERED" && ansToCypher.map(a => a.id).includes(e.from));
+      await sleep(700);
+
+      const cypherAnswerers = [...new Set(ansToCypher.map(a => a.by))];
+      highlightNodes(cypherAnswerers, "#6ea8ff", "#3d75c4", 22);
+      highlightEdges(e => e._kind === "PROVIDED" && ansToCypher.map(a => a.id).includes(e.to));
+      await sleep(900);
+
+      setStatus(`<span class="step">Step 3.</span> Of those users, filter to those who also ASKED a :Tag {name:'java'} question`);
+      highlightNodes(["t:java"], "#c792ea", "#8e62ad", 26);
+      const javaQs = QUESTIONS.filter(q => q.tags.includes("t:java")).map(q => q.id);
+      highlightNodes(javaQs, "#ffb86b", "#c8854a", 20);
+      highlightEdges(e => e._kind === "TAGGED" && e.to === "t:java");
+      await sleep(700);
+
+      // The actual matches: users in cypherAnswerers who ASKED a java question.
+      const matches = cypherAnswerers.filter(u =>
+        ASKED.some(r => r.user === u && javaQs.includes(r.q)));
+      highlightEdges(e => e._kind === "ASKED" && matches.includes(e.from) && javaQs.includes(e.to));
+      await sleep(700);
+
+      setStatus(`<span class="step">Step 4.</span> Intersection → ${matches.length} users: ${matches.map(m => m.split(":")[1]).join(", ")}`);
+      highlightNodes(matches, "#ffe66b", "#c8a500", 32);
+      await sleep(600);
+    },
+  },
+  {
+    n: 3,
+    label: "Top tags co-occurring with 'neo4j-apoc'",
+    cypher: `// Tag co-occurrence ranked by count
+MATCH (:Tag {name:'neo4j-apoc'})<-[:TAGGED]-(q:Question)-[:TAGGED]->(t:Tag)
+WHERE t.name <> 'neo4j-apoc'
+RETURN t.name, count(*) AS n
+ORDER BY n DESC LIMIT 5;`,
+    answer: { type: "ranked", items: [
+      ["neo4j", 122], ["cypher", 86], ["graph-databases", 9], ["graph-data-science", 4], ["csv", 4],
+    ] },
+    verdict: { good: true, text: "Aggregate over the whole graph — RAG only sees 3 passages at a time." },
+    run: async () => {
+      dimAll();
+      setStatus(`<span class="step">Step 1.</span> Anchor on :Tag {name:'neo4j-apoc'}`);
+      highlightNodes(["t:apoc"], "#c792ea", "#8e62ad", 26);
+      await sleep(700);
+
+      setStatus(`<span class="step">Step 2.</span> Find every Question TAGGED neo4j-apoc`);
+      const apocQs = QUESTIONS.filter(q => q.tags.includes("t:apoc")).map(q => q.id);
+      highlightNodes(apocQs, "#ffb86b", "#c8854a", 22);
+      highlightEdges(e => e._kind === "TAGGED" && e.to === "t:apoc" && apocQs.includes(e.from));
+      await sleep(900);
+
+      setStatus(`<span class="step">Step 3.</span> Follow each Question's other TAGGED tags`);
+      const coTagIds = new Set();
+      for (const q of QUESTIONS.filter(q => q.tags.includes("t:apoc"))) {
+        for (const t of q.tags) if (t !== "t:apoc") coTagIds.add(t);
+      }
+      highlightNodes([...coTagIds], "#c792ea", "#8e62ad", 22);
+      highlightEdges(e => e._kind === "TAGGED" && apocQs.includes(e.from) && e.to !== "t:apoc");
+      await sleep(900);
+
+      setStatus(`<span class="step">Step 4.</span> count(*) per tag, ORDER BY n DESC LIMIT 5`);
+      highlightNodes(["t:neo4j", "t:cypher"], "#ffe66b", "#c8a500", 28);
+      await sleep(600);
+    },
+  },
+  {
+    n: 4,
+    label: "🧊 ANTARCTICA: cypher questions with >50,000 views",
+    cypher: `// Antarctica test — should return zero rows.
+// Max view_count in this graph is 1,851. RAG will hallucinate; Graph-RAG returns nothing.
+MATCH (q:Question)-[:TAGGED]->(:Tag {name:'cypher'})
+WHERE q.view_count > 50000
+RETURN q.title, q.view_count
+ORDER BY q.view_count DESC LIMIT 3;
+
+// Proof: the actual ceiling
+MATCH (q:Question)-[:TAGGED]->(:Tag {name:'cypher'})
+RETURN max(q.view_count) AS ceiling;  // → 1851`,
+    answer: { type: "empty", ceiling: 1851, title: "How to filter Cypher by date?" },
+    verdict: { good: true, text: "Empty result — and Graph-RAG proves it with the real max. RAG would invent." },
+    run: async () => {
+      dimAll();
+      setStatus(`<span class="step">Step 1.</span> MATCH (q:Question)-[:TAGGED]->(:Tag {name:'cypher'})`);
+      highlightNodes(["t:cypher"], "#c792ea", "#8e62ad", 26);
+      const cypherQs = QUESTIONS.filter(q => q.tags.includes("t:cypher")).map(q => q.id);
+      highlightNodes(cypherQs, "#ffb86b", "#c8854a", 22);
+      highlightEdges(e => e._kind === "TAGGED" && e.to === "t:cypher");
+      await sleep(1000);
+
+      setStatus(`<span class="step">Step 2.</span> WHERE view_count > 50000 → none match (max is 1,851)`);
+      // pulse-then-fade red across the cypher questions
+      for (const id of cypherQs) {
+        allNodes.update({ id, color: { background: "#ff7a7a", border: "#a93939" }, borderWidth: 3 });
+      }
+      await sleep(700);
+      for (const id of cypherQs) {
+        allNodes.update({ id, color: { background: "#1a1f2a", border: "#2a3142" }, borderWidth: 1, opacity: 0.4 });
+      }
+      await sleep(400);
+
+      setStatus(`<span class="step">Step 3.</span> Proof: max(view_count) = 1851 → "How to filter Cypher by date?"`);
+      highlightNodes(["q1"], "#ffe66b", "#c8a500", 30);
+      await sleep(600);
+    },
+  },
+];
+
+// -----------------------------------------------------------------------------
+// UI wiring
+// -----------------------------------------------------------------------------
+const queriesDiv = document.getElementById("queries");
+const cypherEl = document.getElementById("cypher");
+const resultsEl = document.getElementById("results");
+const runBtn = document.getElementById("run-btn");
+const resetBtn = document.getElementById("reset-btn");
+
+let currentQuery = null;
+
+function renderResult(q) {
+  const v = q.verdict;
+  let badge = `<div class="verdict${v.good ? "" : " bad"}">${v.good ? "✓ EXACT" : "✗ FAILED"} · ${v.text}</div>`;
+  let body = "";
+  const a = q.answer;
+  if (a.type === "number") {
+    body = `<div class="answer-num">${a.value}</div><div class="label">${a.label}</div>`;
+  } else if (a.type === "list") {
+    body = `<div class="label">${a.items.length} users:</div><ul>${a.items.map(i => `<li>${i}</li>`).join("")}</ul>`;
+  } else if (a.type === "ranked") {
+    body = `<ul>${a.items.map(([k, n], i) => `<li><span class="label">${i + 1}.</span> ${k} <span class="label">— ${n}</span></li>`).join("")}</ul>`;
+  } else if (a.type === "empty") {
+    body = `<div class="answer-num" style="color:var(--accent-2)">0</div>
+            <div class="label">questions match. Proof: max view_count = <b>${a.ceiling}</b><br>("${a.title}")</div>`;
+  }
+  resultsEl.innerHTML = badge + body;
+}
+
+function makeBtn(q) {
+  const b = document.createElement("button");
+  b.className = "q-btn";
+  const num = q.n === 4 ? `<span class="ice">🧊</span>` : `<span class="num">${q.n}.</span>`;
+  b.innerHTML = `${num}${q.label}`;
+  b.onclick = async () => {
+    document.querySelectorAll(".q-btn").forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    currentQuery = q;
+    cypherEl.innerHTML = hl(q.cypher);
+    resultsEl.innerHTML = `<div class="label">Running traversal…</div>`;
+    runBtn.disabled = false;
+    resetHighlights();
+    await sleep(150);
+    await q.run();
+    renderResult(q);
+  };
+  return b;
+}
+
+QUERIES.forEach(q => queriesDiv.appendChild(makeBtn(q)));
+
+runBtn.onclick = async () => {
+  if (!currentQuery) return;
+  resetHighlights();
+  resultsEl.innerHTML = `<div class="label">Running traversal…</div>`;
+  await sleep(150);
+  await currentQuery.run();
+  renderResult(currentQuery);
+};
+
+resetBtn.onclick = () => {
+  resetHighlights();
+  setStatus("Pick a query →");
+  cypherEl.innerHTML = `<span class="comment">// Click a query to see the Cypher and the traversal.</span>`;
+  resultsEl.innerHTML = "—";
+  runBtn.disabled = true;
+  document.querySelectorAll(".q-btn").forEach(x => x.classList.remove("active"));
+  currentQuery = null;
+};
+</script>
+</body>
+</html>
