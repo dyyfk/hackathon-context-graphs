@@ -4,6 +4,8 @@ Side-by-side demo showing how a Neo4j context graph + Cypher-generating agent be
 
 Built for the [Hack Day at AWS Builder Loft SF, May 19 2026](https://luma.com/bchosur4) using patterns from the [AWS "stop AI agent hallucinations" workshop](https://github.com/aws-samples/sample-stop-ai-agent-hallucinations-workshop).
 
+**▶️ [Watch the demo recording](https://github.com/dyyfk/hackathon-context-graphs/releases/tag/v1.0-demo)** — Streamlit walkthrough of all 4 hero queries.
+
 ## What it shows
 
 Two agents answer the same questions over the same Stack Overflow corpus:

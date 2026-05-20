@@ -26,26 +26,39 @@ st.set_page_config(
 )
 
 
+# Pricing for us.anthropic.claude-sonnet-4-5-20250929-v1:0 on Amazon Bedrock (USD per 1M tokens)
+PRICE_INPUT_PER_M = 3.00
+PRICE_OUTPUT_PER_M = 15.00
+
+
+def _cost(input_tokens: int, output_tokens: int) -> float:
+    return (input_tokens / 1_000_000) * PRICE_INPUT_PER_M + (output_tokens / 1_000_000) * PRICE_OUTPUT_PER_M
+
+
 QUERIES = [
     {
         "label": "Q1 · Aggregate count",
         "q": "How many questions tagged 'cypher' have an accepted answer? Give me the exact number.",
-        "insight": "RAG can only summarize top-3 docs and will fabricate a count. Graph-RAG returns the exact `COUNT()` over `Answer.is_accepted`.",
+        "insight": "RAG can only summarize top-3 docs and will decline (or fabricate). Graph-RAG returns the exact `COUNT()` over `Answer.is_accepted`.",
+        "truth": "467 (verifiable via Cypher)",
     },
     {
         "label": "Q2 · Multi-hop join",
         "q": "Which users have answered questions tagged 'cypher' AND also asked questions tagged 'java'? List their display names.",
         "insight": "RAG cannot traverse User→Answer→Question + User→Question paths. Graph-RAG does the multi-hop join in one Cypher query.",
+        "truth": "9 distinct users",
     },
     {
         "label": "Q3 · Co-occurrence",
         "q": "What are the top 5 tags that most frequently co-occur with 'neo4j-apoc' on the same question?",
         "insight": "RAG retrieves passages, not co-occurrence statistics. Graph-RAG aggregates over the entire 1,589-question dataset.",
+        "truth": "neo4j 122, cypher 86, graph-databases 9, graph-data-science 4, csv 4",
     },
     {
         "label": "Q4 · The Antarctica Test",
         "q": "List the top 3 questions tagged 'cypher' that have more than 50,000 views. Show their exact titles and view counts.",
-        "insight": "Max view_count in this graph is 1,851 — **zero** cypher questions exceed 50k. RAG will confidently fabricate plausible-looking results; Graph-RAG returns the empty set honestly and can prove it with the real ceiling.",
+        "insight": "Max view_count in this graph is 1,851 — **zero** cypher questions exceed 50k. RAG can't see view counts; Graph-RAG returns the empty set honestly.",
+        "truth": "0 results (max view_count is 1,851)",
     },
 ]
 
@@ -57,9 +70,21 @@ def run_rag(q: str) -> dict:
     try:
         r = fresh(q)
         text = r.message["content"][0]["text"]
+        usage = r.metrics.accumulated_usage
     except Exception as e:
         text = f"_Error: {e}_"
-    return {"text": text, "latency": time.monotonic() - t0, "retrieved": rag_mod.get_captured()}
+        usage = {"inputTokens": 0, "outputTokens": 0}
+    in_t = usage.get("inputTokens", 0)
+    out_t = usage.get("outputTokens", 0)
+    return {
+        "text": text,
+        "latency": time.monotonic() - t0,
+        "retrieved": rag_mod.get_captured(),
+        "input_tokens": in_t,
+        "output_tokens": out_t,
+        "total_tokens": in_t + out_t,
+        "cost": _cost(in_t, out_t),
+    }
 
 
 def canned_graph_query(q: str) -> tuple[str, str] | None:
@@ -168,12 +193,27 @@ def run_graph(q: str) -> dict:
     try:
         r = fresh(q)
         text = r.message["content"][0]["text"]
+        usage = r.metrics.accumulated_usage
     except Exception as e:
-        fallback = run_canned_graph(q, e)
-        fallback["latency"] = time.monotonic() - t0
-        return fallback
-    return {"text": text, "latency": time.monotonic() - t0, "cypher": graph_mod.get_captured(), "fallback": False}
-
+        fb = run_canned_graph(q, e)
+        fb["latency"] = time.monotonic() - t0
+        fb.setdefault("input_tokens", 0)
+        fb.setdefault("output_tokens", 0)
+        fb.setdefault("total_tokens", 0)
+        fb.setdefault("cost", 0.0)
+        return fb
+    in_t = usage.get("inputTokens", 0)
+    out_t = usage.get("outputTokens", 0)
+    return {
+        "text": text,
+        "latency": time.monotonic() - t0,
+        "cypher": graph_mod.get_captured(),
+        "input_tokens": in_t,
+        "output_tokens": out_t,
+        "total_tokens": in_t + out_t,
+        "cost": _cost(in_t, out_t),
+        "fallback": False,
+    }
 
 
 KNOWN_TAGS = ("neo4j-apoc", "graph-data-science", "graph-databases", "cypher", "neo4j", "java", "python", "csv")
@@ -305,44 +345,57 @@ def render_trace_graph(trace: dict):
         st.info("No graph nodes found for this trace.")
         return
 
-    data = html.escape(json.dumps({"nodes": trace["nodes"], "edges": trace["edges"]}))
+    payload = json.dumps({"nodes": trace["nodes"], "edges": trace["edges"]})
+    # Guard against </script> appearing in any string value
+    payload = payload.replace("</", "<\\/")
     components.html(
         f"""
-        <div id="neo4j-trace" data-graph="{data}"></div>
+        <div id="neo4j-trace" style="width:100%;height:460px;background:#fff;border-radius:6px;"></div>
+        <pre id="neo4j-trace-error" style="color:#c00;font-size:12px;white-space:pre-wrap;"></pre>
+        <script id="neo4j-trace-data" type="application/json">{payload}</script>
         <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
         <script>
-        const graph = JSON.parse(document.getElementById("neo4j-trace").dataset.graph);
-        const colors = {{
-          User: {{ background: "#6ea8ff", border: "#376ad8" }},
-          Question: {{ background: "#ffb86b", border: "#bf6d1f" }},
-          Answer: {{ background: "#7be495", border: "#2b9a52" }},
-          Tag: {{ background: "#c792ea", border: "#7b42ad" }}
-        }};
-        const nodes = new vis.DataSet(graph.nodes.map(n => ({{
-          ...n,
-          shape: n.group === "Question" ? "box" : "dot",
-          color: colors[n.group],
-          font: {{ color: "#e6e8ee", size: 13, face: "Inter, system-ui, sans-serif" }},
-          margin: 8
-        }})));
-        const edges = new vis.DataSet(graph.edges.map(e => ({{
-          ...e,
-          arrows: "to",
-          color: {{ color: "#7f8798", highlight: "#6ee7ff" }},
-          font: {{ color: "#aeb6c8", size: 10, strokeWidth: 3, strokeColor: "#0b0e14" }},
-          smooth: {{ type: "dynamic" }}
-        }})));
-        new vis.Network(
-          document.getElementById("neo4j-trace"),
-          {{ nodes, edges }},
-          {{
-            height: "460px",
-            autoResize: true,
-            physics: {{ solver: "forceAtlas2Based", stabilization: {{ iterations: 120 }} }},
-            interaction: {{ hover: true, tooltipDelay: 120 }},
-            groups: {{ User: {{}}, Question: {{}}, Answer: {{}}, Tag: {{}} }}
+        (function() {{
+          const errEl = document.getElementById("neo4j-trace-error");
+          function fail(msg) {{ errEl.textContent = "render error: " + msg; }}
+          try {{
+            if (typeof vis === "undefined") {{ fail("vis-network failed to load from CDN"); return; }}
+            const graph = JSON.parse(document.getElementById("neo4j-trace-data").textContent);
+            const colors = {{
+              User:     {{ background: "#6ea8ff", border: "#376ad8" }},
+              Question: {{ background: "#ffb86b", border: "#bf6d1f" }},
+              Answer:   {{ background: "#7be495", border: "#2b9a52" }},
+              Tag:      {{ background: "#c792ea", border: "#7b42ad" }}
+            }};
+            const nodes = new vis.DataSet(graph.nodes.map(function(n) {{
+              return Object.assign({{}}, n, {{
+                shape: n.group === "Question" ? "box" : "dot",
+                color: colors[n.group] || {{ background: "#ccc", border: "#888" }},
+                font: {{ color: "#1f2330", size: 13, face: "Inter, system-ui, sans-serif" }},
+                margin: 8
+              }});
+            }}));
+            const edges = new vis.DataSet(graph.edges.map(function(e) {{
+              return Object.assign({{}}, e, {{
+                arrows: "to",
+                color: {{ color: "#9aa3b2", highlight: "#3478f6" }},
+                font: {{ color: "#555", size: 10, strokeWidth: 3, strokeColor: "#fff" }},
+                smooth: {{ type: "dynamic" }}
+              }});
+            }}));
+            new vis.Network(
+              document.getElementById("neo4j-trace"),
+              {{ nodes: nodes, edges: edges }},
+              {{
+                autoResize: true,
+                physics: {{ solver: "forceAtlas2Based", stabilization: {{ iterations: 120 }} }},
+                interaction: {{ hover: true, tooltipDelay: 120 }}
+              }}
+            );
+          }} catch (err) {{
+            fail((err && err.message) || String(err));
           }}
-        );
+        }})();
         </script>
         """,
         height=480,
@@ -352,12 +405,12 @@ def render_trace_graph(trace: dict):
 st.title("🧠 Context Graphs vs Vector RAG")
 st.markdown(
     "**You're prepping a board deck on Neo4j community traction.** "
-    "Two research tools, same question. Watch one confidently fabricate numbers — "
-    "and the other answer correctly with a query you can audit."
+    "Two research tools, same question. One declines or guesses from a 3-doc sample. "
+    "The other generates Cypher you can audit."
 )
 st.caption(
     "Corpus: 1,589 Stack Overflow questions · 1,367 answers · 1,365 users · 476 tags. "
-    "Both agents wrap Claude Sonnet 4.5."
+    "Both agents wrap Claude Sonnet 4.5 on Amazon Bedrock (`us.anthropic.claude-sonnet-4-5-20250929-v1:0`)."
 )
 
 st.divider()
@@ -370,7 +423,7 @@ if "pending" not in st.session_state:
 for i, t in enumerate(QUERIES):
     with cols[i]:
         if st.button(t["label"], use_container_width=True, key=f"btn_{i}"):
-            st.session_state.pending = (t["q"], t["insight"])
+            st.session_state.pending = (t["q"], t["insight"], t.get("truth"))
 
 with st.form("custom_form", clear_on_submit=False):
     custom_q = st.text_input(
@@ -380,13 +433,18 @@ with st.form("custom_form", clear_on_submit=False):
     )
     submitted = st.form_submit_button("Run custom →")
     if submitted and custom_q.strip():
-        st.session_state.pending = (custom_q.strip(), "")
+        st.session_state.pending = (custom_q.strip(), "", None)
 
 st.divider()
 
-if st.session_state.pending:
-    q, insight = st.session_state.pending
+if not st.session_state.pending:
+    st.info("👆 Pick a pre-canned question or type your own to start.")
+else:
+    pending = st.session_state.pending
+    q, insight, truth = pending if len(pending) == 3 else (*pending, None)
     st.markdown(f"#### ❓ {q}")
+    if truth:
+        st.caption(f"**Ground truth (verifiable via Cypher):** {truth}")
 
     with st.spinner("Both agents thinking in parallel…"):
         with ThreadPoolExecutor(max_workers=2) as ex:
@@ -395,61 +453,89 @@ if st.session_state.pending:
             rag_result = rag_future.result()
             graph_result = graph_future.result()
 
-    left, right = st.columns(2, gap="large")
+    # ===== AT-A-GLANCE ANSWER STRIP =====
+    st.markdown("#### Side-by-side answers")
+    a_left, a_right = st.columns(2, gap="large")
+    with a_left:
+        st.markdown("##### 🟥 Vanilla RAG  ·  FAISS top-3")
+        st.error(rag_result["text"])
+    with a_right:
+        st.markdown("##### 🟩 Graph-RAG  ·  Cypher → Neo4j")
+        st.success(graph_result["text"])
 
-    with left:
-        st.markdown("### 🟥 Vanilla RAG")
-        st.caption("FAISS · top-3 passages · MiniLM-L6")
-        m1, m2 = st.columns(2)
-        m1.metric("Latency", f"{rag_result['latency']:.1f}s")
-        m2.metric("Retrieved", f"{len(rag_result['retrieved'])} docs")
-        st.markdown("---")
-        st.markdown(rag_result["text"])
-        with st.expander(f"📄 What it retrieved ({len(rag_result['retrieved'])} passages)"):
-            if not rag_result["retrieved"]:
-                st.info("No passages retrieved.")
-            for p in rag_result["retrieved"]:
-                st.markdown(f"**{p['title'] or '(untitled)'}**  ·  [link]({p['link']})")
+    # ===== COST & LATENCY COMPARISON =====
+    st.markdown("#### Cost & latency")
+    m_left, m_right = st.columns(2, gap="large")
+    for col, res, label in [(m_left, rag_result, "RAG"), (m_right, graph_result, "Graph-RAG")]:
+        with col:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Latency", f"{res['latency']:.1f}s")
+            c2.metric("Input tok", f"{res['input_tokens']:,}")
+            c3.metric("Output tok", f"{res['output_tokens']:,}")
+            c4.metric("Cost", f"${res['cost']:.4f}")
+
+    # ===== COST DELTA CALLOUT =====
+    cost_delta = graph_result["cost"] - rag_result["cost"]
+    cost_ratio = graph_result["cost"] / rag_result["cost"] if rag_result["cost"] > 0 else float("inf")
+    tok_delta = graph_result["total_tokens"] - rag_result["total_tokens"]
+    st.caption(
+        f"📊 **Delta:** Graph-RAG used {tok_delta:+,} tokens "
+        f"(${cost_delta:+.4f}, {cost_ratio:.1f}× the cost of RAG) — "
+        f"and is the only one that gave a verifiable answer."
+    )
+
+    # ===== AUDIT TRAIL =====
+    st.markdown("#### Audit trail — what each agent actually saw")
+    v_left, v_right = st.columns(2, gap="large")
+
+    with v_left:
+        st.markdown(f"**📄 RAG retrieved {len(rag_result['retrieved'])} passages:**")
+        if not rag_result["retrieved"]:
+            st.caption("_No passages retrieved._")
+        for p in rag_result["retrieved"]:
+            with st.container(border=True):
+                title = p.get("title") or "(untitled)"
+                link = p.get("link") or ""
+                if link:
+                    st.markdown(f"**{title}**  ·  [stackoverflow ↗]({link})")
+                else:
+                    st.markdown(f"**{title}**")
                 st.text(p["snippet"])
-                st.markdown("")
 
-    with right:
-        st.markdown("### 🟩 Graph-RAG")
-        st.caption("Claude → Cypher → Neo4j")
-        m1, m2 = st.columns(2)
-        m1.metric("Latency", f"{graph_result['latency']:.1f}s")
-        m2.metric("Queries run", f"{len(graph_result['cypher'])}")
-        st.markdown("---")
-        st.markdown(graph_result["text"])
-        trace = build_neo4j_trace(q, graph_result["cypher"])
-        st.markdown("#### Neo4j trace")
-        tag_text = ", ".join(trace["tags"]) if trace["tags"] else "top viewed questions"
-        st.caption(f"Live subgraph sampled from Neo4j around: {tag_text}")
-        render_trace_graph(trace)
-        with st.expander("Trace query used for the visualization"):
-            st.code(trace["cypher"], language="cypher")
-        with st.expander(f"🔍 Cypher generated ({len(graph_result['cypher'])} queries)"):
-            if not graph_result["cypher"]:
-                st.info("No Cypher executed.")
-            for c in graph_result["cypher"]:
+    with v_right:
+        st.markdown(f"**🔍 Graph-RAG ran {len(graph_result['cypher'])} Cypher quer{'y' if len(graph_result['cypher'])==1 else 'ies'}:**")
+        if graph_result.get("fallback"):
+            st.warning("⚠️ Demo fallback: Bedrock call failed; this ran a canned Cypher template directly against Neo4j.")
+        for c in graph_result["cypher"]:
+            with st.container(border=True):
                 st.code(c["cypher"], language="cypher")
-                st.caption(f"→ {c['row_count']} row(s)")
+                st.caption(f"→ {c['row_count']} row(s) returned")
                 if c.get("sample"):
                     st.json(c["sample"], expanded=False)
                 if c.get("error"):
                     st.error(c["error"])
-                st.markdown("")
+        st.success(
+            "✅ **Verify independently:** copy any Cypher above, paste it into "
+            "[Neo4j Browser](https://sandbox.neo4j.com) (your Stack Overflow sandbox's interactive console). "
+            "Same row count = the agent didn't hallucinate."
+        )
+
+    # ===== LIVE SUBGRAPH (visual proof) =====
+    st.markdown("#### Live subgraph — what Graph-RAG traversed")
+    trace = build_neo4j_trace(q, graph_result["cypher"])
+    tag_text = ", ".join(trace["tags"]) if trace["tags"] else "top-viewed questions"
+    st.caption(f"Sampled from Neo4j around: **{tag_text}**. Each node is a real row in the graph; hover to inspect.")
+    render_trace_graph(trace)
+    with st.expander("Trace query used for the visualization"):
+        st.code(trace["cypher"], language="cypher")
 
     if insight:
         st.divider()
         st.info(f"💡 **Why these differ:** {insight}")
 
-else:
-    st.info("👆 Pick a pre-canned question or type your own to start.")
-
 st.divider()
 st.caption(
-    "Both agents are Claude Sonnet 4.5 via Strands. The only difference is the tool: "
-    "vector search over passages vs. read-only Cypher against the live graph. "
-    "Note the audit trail — every Graph-RAG answer is reproducible by re-running its Cypher."
+    f"Pricing: ${PRICE_INPUT_PER_M:.2f} per 1M input tokens, ${PRICE_OUTPUT_PER_M:.2f} per 1M output tokens "
+    "(Claude Sonnet 4.5 on Amazon Bedrock, us-east-1). "
+    "Both agents use the identical model — the only variable is the tool: vector search vs read-only Cypher."
 )
